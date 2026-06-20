@@ -1,0 +1,10 @@
+node_modules/
+dist/
+
+# 실제 예약자 정보(이름·연락처)가 담긴 config — 커밋 금지. 템플릿은 .example 사용.
+reservation.config.json
+# 저장된 세션/쿠키 상태
+*.session.json
+
+.omc
+.claude/settings.local.json
