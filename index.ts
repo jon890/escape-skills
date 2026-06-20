@@ -16,16 +16,18 @@
  * "예약하기" 클릭은 사람이 직접 한다 — 결제 직전 금액·내용 확인 후 승인 원칙.
  */
 import { readFileSync } from "node:fs";
-import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import type { Browser } from "rebrowser-playwright";
 import {
   type ReservationConfig,
   type ReservationSummary,
   availableSlots,
+  clickSlot,
   fillReservationInfo,
   gotoStep2,
   openReservationPage,
+  queryDate,
   readSummary,
   reportAvailability,
   selectSlot,
@@ -70,7 +72,9 @@ function won(n: number): string {
 }
 
 function printSummary(s: ReservationSummary): void {
-  console.log("\n================ 예약 내용 최종 확인 (결제 직전) ================");
+  console.log(
+    "\n================ 예약 내용 최종 확인 (결제 직전) ================",
+  );
   console.log(`  상품      : ${s.goodName}`);
   console.log(`  날짜      : ${s.date}`);
   console.log(`  인원      : ${s.person}`);
@@ -83,7 +87,9 @@ function printSummary(s: ReservationSummary): void {
       `결제주의(필수)=${s.agreePayment ? "O" : "X"} ` +
       `마케팅(선택)=${s.agreeMarketing ? "O" : "X"}`,
   );
-  console.log("=================================================================");
+  console.log(
+    "=================================================================",
+  );
 }
 
 /** STAGE 1 — 예약 가능 날짜/시간 리포트 (주말 우선). */
@@ -96,7 +102,9 @@ async function runQuery(config: ReservationConfig): Promise<void> {
     for (const r of reports) {
       const weekendMark = r.isWeekend ? " ⭐주말" : "";
       if (r.status === "ok") {
-        const times = r.slots.length ? r.slots.map((s) => s.time).join(", ") : "전 타임 마감";
+        const times = r.slots.length
+          ? r.slots.map((s) => s.time).join(", ")
+          : "전 타임 마감";
         console.log(`  ${r.date}(${r.dow})${weekendMark}: ${times}`);
       } else {
         const label = {
@@ -110,11 +118,17 @@ async function runQuery(config: ReservationConfig): Promise<void> {
     open = availableSlots(reports);
     console.log("");
     if (!open.length) {
-      console.log("[결론] 예약 가능한 시간이 없습니다 — 현재 예약이 어렵습니다.");
+      console.log(
+        "[결론] 예약 가능한 시간이 없습니다 — 현재 예약이 어렵습니다.",
+      );
     } else {
-      console.log(`[결론] 총 ${open.length}개 슬롯 예약 가능 (주말 우선 정렬):`);
+      console.log(
+        `[결론] 총 ${open.length}개 슬롯 예약 가능 (주말 우선 정렬):`,
+      );
       for (const o of open) {
-        console.log(`        - ${o.date}(${o.dow})${o.isWeekend ? " ⭐" : ""} ${o.slot.time}`);
+        console.log(
+          `        - ${o.date}(${o.dow})${o.isWeekend ? " ⭐" : ""} ${o.slot.time}`,
+        );
       }
       console.log("\n  예약하려면:  npm run dev -- reserve <날짜> <시간>");
     }
@@ -138,33 +152,64 @@ async function runQuery(config: ReservationConfig): Promise<void> {
 }
 
 /** STAGE 2+3 — 슬롯 선택 → 정보 자동입력 → reCAPTCHA 직전 정지(사람 인계). */
-async function runReserve(config: ReservationConfig, date?: string, time?: string): Promise<void> {
+async function runReserve(
+  config: ReservationConfig,
+  date?: string,
+  time?: string,
+): Promise<void> {
   const { browser, page } = await openReservationPage(config);
   try {
-    const reports = await reportAvailability(page, config);
-    const open = availableSlots(reports);
-    if (!open.length) {
-      console.log("[예약] 예약 가능한 슬롯이 없습니다 — 예약이 어렵습니다.");
-      await browser.close();
-      return;
-    }
+    if (date) {
+      // 날짜 지정 — 다른 날짜는 조회하지 않고 해당 날짜로 바로 이동한다.
+      const report = await queryDate(page, date);
 
-    // 슬롯 결정: 인자 지정 우선, 없으면 주말 우선 첫 슬롯.
-    const target = date
-      ? open.find((o) => o.date === date && (!time || o.slot.time === time))
-      : open[0];
-    if (!target) {
-      console.log(`[예약] 지정한 슬롯(${date} ${time ?? ""})을 찾을 수 없습니다. 가용 슬롯:`);
-      for (const o of open) console.log(`        - ${o.date}(${o.dow}) ${o.slot.time}`);
-      await browser.close();
-      return;
-    }
+      // 1) 날짜 자체가 disable(달력에 없음·마감·범위 밖·시간표 없음) → 해당 날짜 예약 불가.
+      if (report.status !== "ok") {
+        const why = {
+          not_found: "달력에 없음",
+          disabled: "마감 또는 예약 범위 밖",
+          no_timetable: "시간표 없음",
+        }[report.status];
+        console.log(`[예약] ${date}(${report.dow}) — 해당 날짜에 예약이 안 됩니다 (${why}).`);
+        await browser.close();
+        return;
+      }
 
-    console.log(`[예약] 선택 슬롯: ${target.date}(${target.dow}) ${target.slot.time}`);
-    if (!(await selectSlot(page, target.date, target.slot.value))) {
-      console.log("[예약] 슬롯 선택 실패 — 그 사이 마감됐을 수 있습니다. 다시 조회하세요.");
-      await browser.close();
-      return;
+      // 2) 날짜는 열렸으나 지정한 시간이 disable(마감) → 해당 시간 예약 불가.
+      const slot = time ? report.slots.find((s) => s.time === time) : report.slots[0];
+      if (!slot) {
+        const openTimes = report.slots.length ? report.slots.map((s) => s.time).join(", ") : "없음";
+        if (time) {
+          console.log(`[예약] ${date}(${report.dow}) ${time} — 해당 시간에 예약이 안 됩니다. 예약 가능한 시간: ${openTimes}`);
+        } else {
+          console.log(`[예약] ${date}(${report.dow}) 예약 가능한 시간이 없습니다.`);
+        }
+        await browser.close();
+        return;
+      }
+
+      console.log(`[예약] 선택 슬롯: ${date}(${report.dow}) ${slot.time}`);
+      // timepicker 가 이미 해당 날짜에 떠 있으므로 라디오만 클릭한다.
+      if (!(await clickSlot(page, slot.value))) {
+        console.log("[예약] 슬롯 선택 실패 — 그 사이 마감됐을 수 있습니다.");
+        await browser.close();
+        return;
+      }
+    } else {
+      // 날짜 미지정 — 주말 우선 첫 가용 슬롯 (전체 조회 필요).
+      const open = availableSlots(await reportAvailability(page, config));
+      if (!open.length) {
+        console.log("[예약] 예약 가능한 슬롯이 없습니다 — 예약이 어렵습니다.");
+        await browser.close();
+        return;
+      }
+      const t = open[0];
+      console.log(`[예약] 선택 슬롯(주말 우선): ${t.date}(${t.dow}) ${t.slot.time}`);
+      if (!(await selectSlot(page, t.date, t.slot.value))) {
+        console.log("[예약] 슬롯 선택 실패 — 그 사이 마감됐을 수 있습니다. 다시 조회하세요.");
+        await browser.close();
+        return;
+      }
     }
     if (!(await gotoStep2(page))) {
       console.log("[예약] STEP 2 진입 실패.");
@@ -178,10 +223,18 @@ async function runReserve(config: ReservationConfig, date?: string, time?: strin
 
     // 제출 감지(STEP 2 이탈)는 비차단으로 로깅만. 자동 클릭은 하지 않는다.
     page
-      .waitForFunction(() => !/reservation2\.php/.test(location.href), undefined, {
-        timeout: 15 * 60 * 1000,
-      })
-      .then(() => console.log("\n[완료] STEP 2 를 벗어났습니다 — 예약 제출이 진행된 것으로 보입니다."))
+      .waitForFunction(
+        () => !/reservation2\.php/.test(location.href),
+        undefined,
+        {
+          timeout: 15 * 60 * 1000,
+        },
+      )
+      .then(() =>
+        console.log(
+          "\n[완료] STEP 2 를 벗어났습니다 — 예약 제출이 진행된 것으로 보입니다.",
+        ),
+      )
       .catch(() => {});
 
     // 브라우저를 유지해 사람이 reCAPTCHA·예약하기·입금을 마무리하게 한다.
@@ -211,9 +264,14 @@ async function main(): Promise<void> {
     await runQuery(config);
   } else if (/^\d{4}-\d{2}-\d{2}$/.test(mode)) {
     // 하위 호환: 날짜만 주면 그 날짜를 조회 대상으로
-    await runQuery({ ...config, preferences: { ...config.preferences, dates: [mode] } });
+    await runQuery({
+      ...config,
+      preferences: { ...config.preferences, dates: [mode] },
+    });
   } else {
-    console.error(`알 수 없는 모드: ${mode}. 사용법: query | reserve [date] [time]`);
+    console.error(
+      `알 수 없는 모드: ${mode}. 사용법: query | reserve [date] [time]`,
+    );
     process.exit(1);
   }
 }

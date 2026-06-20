@@ -178,12 +178,7 @@ export function availableSlots(
 }
 
 /** 날짜+시간 라디오를 선택한다. value(themeTimeNum) 로 정확히 지정. */
-export async function selectSlot(
-  page: Page,
-  date: string,
-  value: string,
-): Promise<boolean> {
-  await queryDate(page, date); // timepicker 를 해당 날짜로 띄운다
+export async function clickSlot(page: Page, value: string): Promise<boolean> {
   return page.evaluate((v) => {
     const radio = document.querySelector<HTMLInputElement>(
       `#datepicker input[type=radio][value="${v}"]`,
@@ -192,6 +187,16 @@ export async function selectSlot(
     radio.click();
     return radio.checked;
   }, value);
+}
+
+/** 날짜로 이동 후 시간 라디오를 선택한다 (날짜 미지정 자동 경로용). */
+export async function selectSlot(
+  page: Page,
+  date: string,
+  value: string,
+): Promise<boolean> {
+  await queryDate(page, date); // timepicker 를 해당 날짜로 띄운다
+  return clickSlot(page, value);
 }
 
 /** NEXT 를 눌러 STEP 2 로 이동한다. */
