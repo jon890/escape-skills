@@ -65,6 +65,13 @@ export async function openReservationPage(
   const { browser, page } = await createStealthBrowser({
     headless: options.headless ?? false,
   });
+  // tsx/esbuild 의 --keep-names 가 page.evaluate 콜백 안의 이름 붙은 함수에
+  // `__name(...)` 헬퍼 참조를 주입하는데, 브라우저 컨텍스트엔 그 헬퍼가 없어
+  // ReferenceError 가 난다. 메인 월드에 폴리필을 깔아 모든 evaluate 를 보호한다.
+  await page.addInitScript(() => {
+    const g = globalThis as unknown as { __name?: (t: unknown) => unknown };
+    g.__name ??= (t) => t;
+  });
   await page.goto(config.themeUrl, { waitUntil: "domcontentloaded" });
   await page.waitForSelector("td.selDate", { timeout: 15000 });
   await humanDelay(500, 900);
