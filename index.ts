@@ -53,6 +53,18 @@ async function holdOpen(browser: Browser, note: string): Promise<void> {
   });
 }
 
+/**
+ * 컨텍스트가 안정될 짧은 시간을 준 뒤 브라우저를 닫는다.
+ * 페이지 로드 직후 곧바로 닫으면, rebrowser-patches 가 광고·reCAPTCHA 등
+ * 일회성 iframe 의 메인월드 컨텍스트를 해석하는 도중 파괴돼
+ * "Cannot find context with specified id" stderr 경고가 난다(비치명적).
+ * 종료를 살짝 늦춰 in-flight 해석이 끝나게 해 noise 를 줄인다.
+ */
+async function settleAndClose(browser: Browser, ms = 700): Promise<void> {
+  await new Promise((r) => setTimeout(r, ms));
+  await browser.close().catch(() => {});
+}
+
 function loadConfig(): ReservationConfig {
   const path = resolve(HERE, "reservation.config.json");
   try {
@@ -147,7 +159,7 @@ async function runQuery(config: ReservationConfig): Promise<void> {
         "       종료하려면 이 터미널에서 Ctrl+C.",
     );
   } else {
-    await browser.close();
+    await settleAndClose(browser);
   }
 }
 
@@ -170,21 +182,31 @@ async function runReserve(
           disabled: "마감 또는 예약 범위 밖",
           no_timetable: "시간표 없음",
         }[report.status];
-        console.log(`[예약] ${date}(${report.dow}) — 해당 날짜에 예약이 안 됩니다 (${why}).`);
-        await browser.close();
+        console.log(
+          `[예약] ${date}(${report.dow}) — 해당 날짜에 예약이 안 됩니다 (${why}).`,
+        );
+        await settleAndClose(browser);
         return;
       }
 
       // 2) 날짜는 열렸으나 지정한 시간이 disable(마감) → 해당 시간 예약 불가.
-      const slot = time ? report.slots.find((s) => s.time === time) : report.slots[0];
+      const slot = time
+        ? report.slots.find((s) => s.time === time)
+        : report.slots[0];
       if (!slot) {
-        const openTimes = report.slots.length ? report.slots.map((s) => s.time).join(", ") : "없음";
+        const openTimes = report.slots.length
+          ? report.slots.map((s) => s.time).join(", ")
+          : "없음";
         if (time) {
-          console.log(`[예약] ${date}(${report.dow}) ${time} — 해당 시간에 예약이 안 됩니다. 예약 가능한 시간: ${openTimes}`);
+          console.log(
+            `[예약] ${date}(${report.dow}) ${time} — 해당 시간에 예약이 안 됩니다. 예약 가능한 시간: ${openTimes}`,
+          );
         } else {
-          console.log(`[예약] ${date}(${report.dow}) 예약 가능한 시간이 없습니다.`);
+          console.log(
+            `[예약] ${date}(${report.dow}) 예약 가능한 시간이 없습니다.`,
+          );
         }
-        await browser.close();
+        await settleAndClose(browser);
         return;
       }
 
@@ -192,7 +214,7 @@ async function runReserve(
       // timepicker 가 이미 해당 날짜에 떠 있으므로 라디오만 클릭한다.
       if (!(await clickSlot(page, slot.value))) {
         console.log("[예약] 슬롯 선택 실패 — 그 사이 마감됐을 수 있습니다.");
-        await browser.close();
+        await settleAndClose(browser);
         return;
       }
     } else {
@@ -200,20 +222,24 @@ async function runReserve(
       const open = availableSlots(await reportAvailability(page, config));
       if (!open.length) {
         console.log("[예약] 예약 가능한 슬롯이 없습니다 — 예약이 어렵습니다.");
-        await browser.close();
+        await settleAndClose(browser);
         return;
       }
       const t = open[0];
-      console.log(`[예약] 선택 슬롯(주말 우선): ${t.date}(${t.dow}) ${t.slot.time}`);
+      console.log(
+        `[예약] 선택 슬롯(주말 우선): ${t.date}(${t.dow}) ${t.slot.time}`,
+      );
       if (!(await selectSlot(page, t.date, t.slot.value))) {
-        console.log("[예약] 슬롯 선택 실패 — 그 사이 마감됐을 수 있습니다. 다시 조회하세요.");
-        await browser.close();
+        console.log(
+          "[예약] 슬롯 선택 실패 — 그 사이 마감됐을 수 있습니다. 다시 조회하세요.",
+        );
+        await settleAndClose(browser);
         return;
       }
     }
     if (!(await gotoStep2(page))) {
       console.log("[예약] STEP 2 진입 실패.");
-      await browser.close();
+      await settleAndClose(browser);
       return;
     }
 
